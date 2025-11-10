@@ -40,6 +40,7 @@ public class Main {
                 }
             }
 
+            
             OutputStream output = clientSocket.getOutputStream();
 
             // Handle root path: return 200 with no body (matches stage expectations)
