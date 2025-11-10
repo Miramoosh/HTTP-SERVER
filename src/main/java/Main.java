@@ -1,32 +1,49 @@
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 
 public class Main {
     public static void main(String[] args) {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
         System.out.println("Logs from your program will appear here!");
 
         try {
             ServerSocket serverSocket = new ServerSocket(4221);
-
-            
-            // Since the tester restarts your program quite often, setting SO_REUSEADDR
-            // ensures that we don't run into 'Address already in use' errors
             serverSocket.setReuseAddress(true);
 
-            Socket clientSocket = serverSocket.accept(); // Wait for connection from client.
+            Socket clientSocket = serverSocket.accept();
             System.out.println("accepted new connection");
 
-            // Get the output stream (to send data to the client)
+            // Read the HTTP request line
+            BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+            String requestLine = reader.readLine();  // e.g. "GET /index.html HTTP/1.1"
+            System.out.println("Request Line: " + requestLine);
+
+            // Extract the path from the request line
+            String path = "/";
+            if (requestLine != null) {
+                String[] parts = requestLine.split(" ");
+                if (parts.length >= 2) {
+                    path = parts[1];
+                }
+            }
+
+            // Prepare the response
             OutputStream output = clientSocket.getOutputStream();
+            String response;
 
-            // Send the minimal HTTP response required for this stage
-            String httpResponse = "HTTP/1.1 200 OK\r\n\r\n";
-            output.write(httpResponse.getBytes());
+            if ("/".equals(path)) {
+                response = "HTTP/1.1 200 OK\r\n\r\n";
+            } else {
+                response = "HTTP/1.1 404 Not Found\r\n\r\n";
+            }
 
-            // Close connection after responding
+            // Send response
+            output.write(response.getBytes());
+
+            // Close sockets
             clientSocket.close();
             serverSocket.close();
 
