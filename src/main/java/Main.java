@@ -42,10 +42,16 @@ public class Main {
 
             OutputStream output = clientSocket.getOutputStream();
 
-            if (path.startsWith("/echo/")) {
+            // Handle root path: return 200 with no body (matches stage expectations)
+            if ("/".equals(path)) {
+                String response = "HTTP/1.1 200 OK\r\n\r\n";
+                output.write(response.getBytes(StandardCharsets.UTF_8));
+
+            } else if (path.startsWith("/echo/")) {
                 String echo = path.substring("/echo/".length()); // may be empty
                 byte[] body = echo.getBytes(StandardCharsets.UTF_8);
 
+                
                 String headers = "HTTP/1.1 200 OK\r\n" +
                         "Content-Type: text/plain\r\n" +
                         "Content-Length: " + body.length + "\r\n" +
@@ -53,6 +59,7 @@ public class Main {
 
                 output.write(headers.getBytes(StandardCharsets.UTF_8));
                 output.write(body);
+
             } else {
                 String response = "HTTP/1.1 404 Not Found\r\n\r\n";
                 output.write(response.getBytes(StandardCharsets.UTF_8));
