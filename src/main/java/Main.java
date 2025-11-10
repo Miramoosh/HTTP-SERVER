@@ -39,7 +39,6 @@ public class Main {
                     path = parts[1];
                 }
             }
-
             
             OutputStream output = clientSocket.getOutputStream();
 
