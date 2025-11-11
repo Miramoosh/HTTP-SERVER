@@ -8,6 +8,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 public class Main {
     public static void main(String[] args) {
@@ -32,7 +33,6 @@ public class Main {
                 tmp = new File(directoryArg).getCanonicalFile();
                 if (!tmp.isDirectory()) {
                     System.out.println("Provided --directory is not a directory: " + directoryArg);
-                    // still continue but disable file-serving
                     baseDir = null;
                 } else {
                     baseDir = tmp;
@@ -40,9 +40,6 @@ public class Main {
                 }
             } catch (IOException e) {
                 System.out.println("Invalid directory: " + e.getMessage());
-                // continue but disable file-serving
-                // (do not exit — tests expect server to run without --directory)
-                // set baseDir to null to disable /files endpoint
                 throw new RuntimeException("Failed to resolve directory", e);
             }
         }
@@ -58,13 +55,14 @@ public class Main {
 
                 new Thread(() -> {
                     try {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                        String requestLine = reader.readLine(); // e.g. "GET /path HTTP/1.1"
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
+                        String requestLine = reader.readLine(); // e.g. "POST /files/file_123 HTTP/1.1"
                         System.out.println("Request Line: " + requestLine);
 
-                        // Read headers (we may or may not use them depending on endpoint)
+                        // Read headers (capture Content-Length and User-Agent if present)
                         String headerLine;
                         String userAgent = null;
+                        int contentLength = 0; // default 0 if not provided
                         while ((headerLine = reader.readLine()) != null && headerLine.length() != 0) {
                             System.out.println("Header: " + headerLine);
                             String lower = headerLine.toLowerCase();
@@ -75,25 +73,37 @@ public class Main {
                                 } else {
                                     userAgent = "";
                                 }
+                            } else if (lower.startsWith("content-length:")) {
+                                int idx = headerLine.indexOf(':');
+                                if (idx >= 0 && idx + 1 < headerLine.length()) {
+                                    String val = headerLine.substring(idx + 1).trim();
+                                    try {
+                                        contentLength = Integer.parseInt(val);
+                                    } catch (NumberFormatException nfe) {
+                                        contentLength = 0;
+                                    }
+                                }
                             }
                         }
 
+                        String method = "GET";
                         String path = "/";
                         if (requestLine != null) {
                             String[] parts = requestLine.split(" ");
+                            if (parts.length >= 1) method = parts[0];
                             if (parts.length >= 2) path = parts[1];
                         }
 
                         OutputStream output = clientSocket.getOutputStream();
 
                         // Root path -> minimal 200
-                        if ("/".equals(path)) {
+                        if ("GET".equals(method) && "/".equals(path)) {
                             String response = "HTTP/1.1 200 OK\r\n\r\n";
                             output.write(response.getBytes(StandardCharsets.UTF_8));
                             output.flush();
 
                             // /echo/{str}
-                        } else if (path.startsWith("/echo/")) {
+                        } else if ("GET".equals(method) && path.startsWith("/echo/")) {
                             String echo = path.substring("/echo/".length());
                             byte[] body = echo.getBytes(StandardCharsets.UTF_8);
                             String headers = "HTTP/1.1 200 OK\r\n" +
@@ -105,8 +115,8 @@ public class Main {
                             output.flush();
 
                             // /user-agent
-                        } else if ("/user-agent".equals(path)) {
-                            if (userAgent == null) userAgent = ""; // defensive: header might be missing
+                        } else if ("GET".equals(method) && "/user-agent".equals(path)) {
+                            if (userAgent == null) userAgent = "";
                             byte[] body = userAgent.getBytes(StandardCharsets.UTF_8);
                             String headers = "HTTP/1.1 200 OK\r\n" +
                                     "Content-Type: text/plain\r\n" +
@@ -116,17 +126,15 @@ public class Main {
                             output.write(body);
                             output.flush();
 
-                            // /files/{filename}
-                        } else if (path.startsWith("/files/")) {
+                            // GET /files/{filename}
+                        } else if ("GET".equals(method) && path.startsWith("/files/")) {
                             if (baseDir == null) {
-                                // No directory configured -> 404
                                 String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
                                 output.write(notFound.getBytes(StandardCharsets.UTF_8));
                                 output.flush();
                             } else {
                                 String filename = path.substring("/files/".length());
                                 try {
-                                    // Resolve path safely and prevent directory traversal
                                     Path requestedPath = new File(baseDir, filename).getCanonicalFile().toPath();
                                     Path basePath = baseDir.toPath();
 
@@ -152,8 +160,54 @@ public class Main {
                                 }
                             }
 
+                            // POST /files/{filename} -> create file with body content
+                        } else if ("POST".equals(method) && path.startsWith("/files/")) {
+                            if (baseDir == null) {
+                                // No directory configured -> cannot create file
+                                String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
+                                output.write(notFound.getBytes(StandardCharsets.UTF_8));
+                                output.flush();
+                            } else {
+                                String filename = path.substring("/files/".length());
+                                // Read the request body using the BufferedReader (works for ASCII/text tests)
+                                int remaining = contentLength;
+                                StringBuilder sb = new StringBuilder();
+                                while (remaining > 0) {
+                                    char[] buf = new char[Math.min(remaining, 8192)];
+                                    int r = reader.read(buf, 0, buf.length);
+                                    if (r == -1) break;
+                                    sb.append(buf, 0, r);
+                                    remaining -= r;
+                                }
+                                byte[] bodyBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+
+                                try {
+                                    // Resolve target path safely
+                                    Path requestedPath = new File(baseDir, filename).getCanonicalFile().toPath();
+                                    Path basePath = baseDir.toPath();
+
+                                    if (!requestedPath.startsWith(basePath)) {
+                                        // directory traversal attempt -> 404
+                                        String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
+                                        output.write(notFound.getBytes(StandardCharsets.UTF_8));
+                                        output.flush();
+                                    } else {
+                                        // write file (create or overwrite)
+                                        Files.write(requestedPath, bodyBytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                                        String created = "HTTP/1.1 201 Created\r\n\r\n";
+                                        output.write(created.getBytes(StandardCharsets.UTF_8));
+                                        output.flush();
+                                    }
+                                } catch (IOException e) {
+                                    System.out.println("Error writing file: " + e.getMessage());
+                                    String err = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                                    output.write(err.getBytes(StandardCharsets.UTF_8));
+                                    output.flush();
+                                }
+                            }
+
                         } else {
-                            // Any other path -> 404
+                            // Any other path/method -> 404
                             String response = "HTTP/1.1 404 Not Found\r\n\r\n";
                             output.write(response.getBytes(StandardCharsets.UTF_8));
                             output.flush();
