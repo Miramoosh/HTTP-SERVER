@@ -1,14 +1,16 @@
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.zip.GZIPOutputStream;
 
 public class Main {
     public static void main(String[] args) {
@@ -108,30 +110,62 @@ public class Main {
                             output.flush();
 
                             // -----------------------------------------------------------
-                            // /echo/{str}  (with gzip support)
+                            // /echo/{str}  (with gzip compression when accepted)
                             // -----------------------------------------------------------
                         } else if ("GET".equals(method) && path.startsWith("/echo/")) {
                             String echo = path.substring("/echo/".length());
                             byte[] body = echo.getBytes(StandardCharsets.UTF_8);
 
-                            boolean gzipSupported =
-                                    acceptEncoding != null &&
-                                            acceptEncoding.contains("gzip");
-
-                            StringBuilder headers = new StringBuilder();
-                            headers.append("HTTP/1.1 200 OK\r\n");
-                            headers.append("Content-Type: text/plain\r\n");
-
-                            if (gzipSupported) {
-                                headers.append("Content-Encoding: gzip\r\n");
+                            // Robust parsing of Accept-Encoding: handle comma-separated list,
+                            // whitespace, and optional parameters (e.g., gzip;q=0.8).
+                            boolean gzipSupported = false;
+                            if (acceptEncoding != null) {
+                                String[] encs = acceptEncoding.split(",");
+                                for (String enc : encs) {
+                                    String token = enc.trim();
+                                    if (token.isEmpty()) continue;
+                                    // strip any parameters after ';' (e.g., "gzip;q=0.8")
+                                    String main = token.split(";")[0].trim();
+                                    if ("gzip".equals(main)) {
+                                        gzipSupported = true;
+                                        break;
+                                    }
+                                }
                             }
 
-                            headers.append("Content-Length: " + body.length + "\r\n");
-                            headers.append("\r\n");
+                            if (gzipSupported) {
+                                // Compress the body with gzip
+                                byte[] compressed;
+                                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                                     GZIPOutputStream gos = new GZIPOutputStream(baos)) {
+                                    gos.write(body);
+                                    gos.finish(); // ensure all data is written
+                                    compressed = baos.toByteArray();
+                                }
 
-                            output.write(headers.toString().getBytes(StandardCharsets.UTF_8));
-                            output.write(body);
-                            output.flush();
+                                StringBuilder headers = new StringBuilder();
+                                headers.append("HTTP/1.1 200 OK\r\n");
+                                headers.append("Content-Encoding: gzip\r\n");
+                                headers.append("Content-Type: text/plain\r\n");
+                                headers.append("Content-Length: " + compressed.length + "\r\n");
+                                headers.append("\r\n");
+
+                                output.write(headers.toString().getBytes(StandardCharsets.UTF_8));
+                                output.write(compressed);
+                                output.flush();
+
+                            } else {
+                                // No compression: send plain body
+                                StringBuilder headers = new StringBuilder();
+                                headers.append("HTTP/1.1 200 OK\r\n");
+                                headers.append("Content-Type: text/plain\r\n");
+                                headers.append("Content-Length: " + body.length + "\r\n");
+                                headers.append("\r\n");
+
+                                output.write(headers.toString().getBytes(StandardCharsets.UTF_8));
+                                output.write(body);
+                                output.flush();
+                            }
 
                             // -----------------------------------------------------------
                             // /user-agent
