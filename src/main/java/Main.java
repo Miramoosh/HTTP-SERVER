@@ -17,7 +17,7 @@ public class Main {
     public static void main(String[] args) {
         System.out.println("Logs from your program will appear here!");
 
-        // Parse --directory <path>
+        // Parse "--directory <path>"
         String directoryArg = null;
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--directory") && i + 1 < args.length) {
@@ -28,14 +28,13 @@ public class Main {
         final File baseDir;
         if (directoryArg == null) {
             baseDir = null;
-            System.out.println("No --directory provided; continuing without file-serving support.");
+            System.out.println("No --directory provided; continuing without file support.");
         } else {
-            File temp;
             try {
-                temp = new File(directoryArg).getCanonicalFile();
+                File temp = new File(directoryArg).getCanonicalFile();
                 if (!temp.isDirectory()) {
-                    baseDir = null;
                     System.out.println("Provided directory is not valid.");
+                    baseDir = null;
                 } else {
                     baseDir = temp;
                     System.out.println("Serving files from: " + baseDir.getAbsolutePath());
@@ -50,11 +49,13 @@ public class Main {
             serverSocket.setReuseAddress(true);
 
             while (true) {
+                // Accept each connection and process it concurrently
                 Socket clientSocket = serverSocket.accept();
                 System.out.println("accepted new connection");
 
                 new Thread(() -> handleClient(clientSocket, baseDir)).start();
             }
+
         } catch (IOException e) {
             System.out.println("Server exception: " + e.getMessage());
         }
@@ -69,18 +70,17 @@ public class Main {
 
             while (true) {
 
-                // ---------------------- READ REQUEST LINE ----------------------
+                // ------------ READ REQUEST LINE ------------
                 String requestLine = reader.readLine();
-                if (requestLine == null) {
-                    break; // client closed connection
-                }
-                if (requestLine.isEmpty()) {
-                    continue; // skip empty
-                }
+                if (requestLine == null)
+                    break;
+
+                if (requestLine.isEmpty())
+                    continue;
 
                 System.out.println("Request Line: " + requestLine);
 
-                // ---------------------- READ HEADERS --------------------------
+                // ------------ READ HEADERS -------------------
                 String headerLine;
                 String userAgent = null;
                 String acceptEncoding = null;
@@ -94,26 +94,29 @@ public class Main {
                         userAgent = headerLine.substring(headerLine.indexOf(':') + 1).trim();
 
                     } else if (lower.startsWith("content-length:")) {
-                        String val = headerLine.substring(headerLine.indexOf(':') + 1).trim();
-                        try { contentLength = Integer.parseInt(val); } catch (Exception ignored) {}
+                        try {
+                            contentLength = Integer.parseInt(
+                                    headerLine.substring(headerLine.indexOf(':') + 1).trim());
+                        } catch (Exception ignored) {}
 
                     } else if (lower.startsWith("accept-encoding:")) {
-                        acceptEncoding = headerLine.substring(headerLine.indexOf(':') + 1).trim().toLowerCase();
+                        acceptEncoding = headerLine.substring(headerLine.indexOf(':') + 1)
+                                .trim().toLowerCase();
                     }
                 }
 
-                // ---------------------- PARSE METHOD + PATH -------------------
+                // ------------ PARSE METHOD + PATH --------------
                 String[] parts = requestLine.split(" ");
-                String method = parts.length > 0 ? parts[0] : "";
-                String path   = parts.length > 1 ? parts[1] : "/";
+                String method = (parts.length >= 1 ? parts[0] : "");
+                String path = (parts.length >= 2 ? parts[1] : "/");
 
-                // ---------------------- HANDLE REQUEST ------------------------
-                handleRequest(method, path, userAgent, acceptEncoding,
-                        contentLength, reader, output, baseDir);
+                // ------------ HANDLE REQUEST -------------------
+                handleRequest(method, path, userAgent, acceptEncoding, contentLength,
+                        reader, output, baseDir);
             }
 
         } catch (IOException e) {
-            System.out.println("Handler exception: " + e.getMessage());
+            System.out.println("Client handler exception: " + e.getMessage());
         } finally {
             try { clientSocket.close(); } catch (IOException ignored) {}
         }
@@ -130,25 +133,22 @@ public class Main {
             File baseDir
     ) throws IOException {
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         // GET /
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         if (method.equals("GET") && path.equals("/")) {
-            String response = "HTTP/1.1 200 OK\r\n\r\n";
-            output.write(response.getBytes(StandardCharsets.UTF_8));
-            output.flush();
+            output.write("HTTP/1.1 200 OK\r\n\r\n".getBytes());
             return;
         }
 
-        // -----------------------------------------------------------
-        // GET /echo/{msg}  (with gzip support)
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
+        // GET /echo/{msg}  (supports gzip compression)
+        // ---------------------------------------------------
         if (method.equals("GET") && path.startsWith("/echo/")) {
 
             String msg = path.substring("/echo/".length());
             byte[] body = msg.getBytes(StandardCharsets.UTF_8);
 
-            // Detect gzip support
             boolean gzip = false;
             if (acceptEncoding != null) {
                 for (String enc : acceptEncoding.split(",")) {
@@ -161,7 +161,7 @@ public class Main {
             }
 
             if (gzip) {
-                // ---- Compress ----
+                // compress output
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 GZIPOutputStream gos = new GZIPOutputStream(baos);
                 gos.write(body);
@@ -175,29 +175,26 @@ public class Main {
                                 "Content-Length: " + compressed.length + "\r\n" +
                                 "\r\n";
 
-                output.write(headers.getBytes(StandardCharsets.UTF_8));
+                output.write(headers.getBytes());
                 output.write(compressed);
-                output.flush();
                 return;
 
             } else {
-                // ---- No compression ----
                 String headers =
                         "HTTP/1.1 200 OK\r\n" +
                                 "Content-Type: text/plain\r\n" +
                                 "Content-Length: " + body.length + "\r\n" +
                                 "\r\n";
 
-                output.write(headers.getBytes(StandardCharsets.UTF_8));
+                output.write(headers.getBytes());
                 output.write(body);
-                output.flush();
                 return;
             }
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         // GET /user-agent
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         if (method.equals("GET") && path.equals("/user-agent")) {
             if (userAgent == null) userAgent = "";
             byte[] body = userAgent.getBytes(StandardCharsets.UTF_8);
@@ -208,16 +205,16 @@ public class Main {
                             "Content-Length: " + body.length + "\r\n" +
                             "\r\n";
 
-            output.write(headers.getBytes(StandardCharsets.UTF_8));
+            output.write(headers.getBytes());
             output.write(body);
-            output.flush();
             return;
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         // GET /files/{filename}
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         if (method.equals("GET") && path.startsWith("/files/")) {
+
             if (baseDir == null) {
                 output.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
                 return;
@@ -233,9 +230,10 @@ public class Main {
                 return;
             }
 
-            if (!filePath.startsWith(baseDir.toPath())
-                    || !Files.exists(filePath)
-                    || !Files.isRegularFile(filePath)) {
+            if (!filePath.startsWith(baseDir.toPath()) ||
+                    !Files.exists(filePath) ||
+                    !Files.isRegularFile(filePath)) {
+
                 output.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
                 return;
             }
@@ -250,14 +248,14 @@ public class Main {
 
             output.write(headers.getBytes());
             output.write(fileBytes);
-            output.flush();
             return;
         }
 
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         // POST /files/{filename}
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
         if (method.equals("POST") && path.startsWith("/files/")) {
+
             if (baseDir == null) {
                 output.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
                 return;
@@ -265,6 +263,7 @@ public class Main {
 
             String filename = path.substring("/files/".length());
 
+            // Read body
             int remaining = contentLength;
             StringBuilder sb = new StringBuilder();
             while (remaining > 0) {
@@ -288,14 +287,12 @@ public class Main {
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
 
             output.write("HTTP/1.1 201 Created\r\n\r\n".getBytes());
-            output.flush();
             return;
         }
 
-        // -----------------------------------------------------------
-        // Default → 404
-        // -----------------------------------------------------------
+        // ---------------------------------------------------
+        // FALLBACK → 404
+        // ---------------------------------------------------
         output.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
-        output.flush();
     }
 }
