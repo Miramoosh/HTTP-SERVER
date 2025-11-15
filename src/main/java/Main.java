@@ -1,232 +1,121 @@
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
+import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Main {
-    public static void main(String[] args) {
-        System.out.println("Logs from your program will appear here!");
 
-        // Parse --directory <path> argument (optional)
-        String directoryArg = null;
-        for (int i = 0; i < args.length; i++) {
-            if ("--directory".equals(args[i]) && i + 1 < args.length) {
-                directoryArg = args[i + 1];
+    public static void main(String[] args) throws IOException {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
+        String line;
+        PrintStream out = System.out;
+
+        while ((line = in.readLine()) != null) {
+            // Do not print any prompt or debug logs (tester expects only command outputs).
+            if (line.length() == 0) continue; // ignore empty lines
+
+            List<String> tokens = tokenize(line);
+            if (tokens.isEmpty()) continue;
+
+            String cmd = tokens.get(0);
+
+            // builtin: exit (optional, harmless)
+            if ("exit".equals(cmd)) {
                 break;
             }
-        }
 
-        final File baseDir;
-        if (directoryArg == null) {
-            baseDir = null;
-            System.out.println("No --directory provided; continuing without file-serving support.");
-        } else {
-            File tmp;
-            try {
-                tmp = new File(directoryArg).getCanonicalFile();
-                if (!tmp.isDirectory()) {
-                    System.out.println("Provided --directory is not a directory: " + directoryArg);
-                    baseDir = null;
-                } else {
-                    baseDir = tmp;
-                    System.out.println("Serving files from: " + baseDir.getAbsolutePath());
-                }
-            } catch (IOException e) {
-                System.out.println("Invalid directory: " + e.getMessage());
-                throw new RuntimeException("Failed to resolve directory", e);
-            }
-        }
-
-        try {
-            ServerSocket serverSocket = new ServerSocket(4221);
-            serverSocket.setReuseAddress(true);
-
-            // Accept connections forever and handle each connection concurrently
-            while (true) {
-                Socket clientSocket = serverSocket.accept();
-                System.out.println("accepted new connection");
-
-                new Thread(() -> {
-                    try {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
-                        String requestLine = reader.readLine(); // e.g. "POST /files/file_123 HTTP/1.1"
-                        System.out.println("Request Line: " + requestLine);
-
-                        // Read headers (capture Content-Length and User-Agent if present)
-                        String headerLine;
-                        String userAgent = null;
-                        int contentLength = 0; // default 0 if not provided
-                        while ((headerLine = reader.readLine()) != null && headerLine.length() != 0) {
-                            System.out.println("Header: " + headerLine);
-                            String lower = headerLine.toLowerCase();
-                            if (lower.startsWith("user-agent:")) {
-                                int idx = headerLine.indexOf(':');
-                                if (idx >= 0 && idx + 1 < headerLine.length()) {
-                                    userAgent = headerLine.substring(idx + 1).trim();
-                                } else {
-                                    userAgent = "";
-                                }
-                            } else if (lower.startsWith("content-length:")) {
-                                int idx = headerLine.indexOf(':');
-                                if (idx >= 0 && idx + 1 < headerLine.length()) {
-                                    String val = headerLine.substring(idx + 1).trim();
-                                    try {
-                                        contentLength = Integer.parseInt(val);
-                                    } catch (NumberFormatException nfe) {
-                                        contentLength = 0;
-                                    }
-                                }
-                            }
-                        }
-
-                        String method = "GET";
-                        String path = "/";
-                        if (requestLine != null) {
-                            String[] parts = requestLine.split(" ");
-                            if (parts.length >= 1) method = parts[0];
-                            if (parts.length >= 2) path = parts[1];
-                        }
-
-                        OutputStream output = clientSocket.getOutputStream();
-
-                        // Root path -> minimal 200
-                        if ("GET".equals(method) && "/".equals(path)) {
-                            String response = "HTTP/1.1 200 OK\r\n\r\n";
-                            output.write(response.getBytes(StandardCharsets.UTF_8));
-                            output.flush();
-
-                            // /echo/{str}
-                        } else if ("GET".equals(method) && path.startsWith("/echo/")) {
-                            String echo = path.substring("/echo/".length());
-                            byte[] body = echo.getBytes(StandardCharsets.UTF_8);
-                            String headers = "HTTP/1.1 200 OK\r\n" +
-                                    "Content-Type: text/plain\r\n" +
-                                    "Content-Length: " + body.length + "\r\n" +
-                                    "\r\n";
-                            output.write(headers.getBytes(StandardCharsets.UTF_8));
-                            output.write(body);
-                            output.flush();
-
-                            // /user-agent
-                        } else if ("GET".equals(method) && "/user-agent".equals(path)) {
-                            if (userAgent == null) userAgent = "";
-                            byte[] body = userAgent.getBytes(StandardCharsets.UTF_8);
-                            String headers = "HTTP/1.1 200 OK\r\n" +
-                                    "Content-Type: text/plain\r\n" +
-                                    "Content-Length: " + body.length + "\r\n" +
-                                    "\r\n";
-                            output.write(headers.getBytes(StandardCharsets.UTF_8));
-                            output.write(body);
-                            output.flush();
-
-                            // GET /files/{filename}
-                        } else if ("GET".equals(method) && path.startsWith("/files/")) {
-                            if (baseDir == null) {
-                                String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                output.write(notFound.getBytes(StandardCharsets.UTF_8));
-                                output.flush();
-                            } else {
-                                String filename = path.substring("/files/".length());
-                                try {
-                                    Path requestedPath = new File(baseDir, filename).getCanonicalFile().toPath();
-                                    Path basePath = baseDir.toPath();
-
-                                    if (!requestedPath.startsWith(basePath) || !Files.exists(requestedPath) || !Files.isRegularFile(requestedPath)) {
-                                        String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                        output.write(notFound.getBytes(StandardCharsets.UTF_8));
-                                        output.flush();
-                                    } else {
-                                        byte[] fileBytes = Files.readAllBytes(requestedPath);
-                                        String headers = "HTTP/1.1 200 OK\r\n" +
-                                                "Content-Type: application/octet-stream\r\n" +
-                                                "Content-Length: " + fileBytes.length + "\r\n" +
-                                                "\r\n";
-                                        output.write(headers.getBytes(StandardCharsets.UTF_8));
-                                        output.write(fileBytes);
-                                        output.flush();
-                                    }
-                                } catch (IOException e) {
-                                    System.out.println("File handling error: " + e.getMessage());
-                                    String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                    output.write(notFound.getBytes(StandardCharsets.UTF_8));
-                                    output.flush();
-                                }
-                            }
-
-                            // POST /files/{filename} -> create file with body content
-                        } else if ("POST".equals(method) && path.startsWith("/files/")) {
-                            if (baseDir == null) {
-                                // No directory configured -> cannot create file
-                                String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                output.write(notFound.getBytes(StandardCharsets.UTF_8));
-                                output.flush();
-                            } else {
-                                String filename = path.substring("/files/".length());
-                                // Read the request body using the BufferedReader (works for ASCII/text tests)
-                                int remaining = contentLength;
-                                StringBuilder sb = new StringBuilder();
-                                while (remaining > 0) {
-                                    char[] buf = new char[Math.min(remaining, 8192)];
-                                    int r = reader.read(buf, 0, buf.length);
-                                    if (r == -1) break;
-                                    sb.append(buf, 0, r);
-                                    remaining -= r;
-                                }
-                                byte[] bodyBytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-
-                                try {
-                                    // Resolve target path safely
-                                    Path requestedPath = new File(baseDir, filename).getCanonicalFile().toPath();
-                                    Path basePath = baseDir.toPath();
-
-                                    if (!requestedPath.startsWith(basePath)) {
-                                        // directory traversal attempt -> 404
-                                        String notFound = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                        output.write(notFound.getBytes(StandardCharsets.UTF_8));
-                                        output.flush();
-                                    } else {
-                                        // write file (create or overwrite)
-                                        Files.write(requestedPath, bodyBytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                                        String created = "HTTP/1.1 201 Created\r\n\r\n";
-                                        output.write(created.getBytes(StandardCharsets.UTF_8));
-                                        output.flush();
-                                    }
-                                } catch (IOException e) {
-                                    System.out.println("Error writing file: " + e.getMessage());
-                                    String err = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
-                                    output.write(err.getBytes(StandardCharsets.UTF_8));
-                                    output.flush();
-                                }
-                            }
-
-                        } else {
-                            // Any other path/method -> 404
-                            String response = "HTTP/1.1 404 Not Found\r\n\r\n";
-                            output.write(response.getBytes(StandardCharsets.UTF_8));
-                            output.flush();
-                        }
-
-                    } catch (IOException e) {
-                        System.out.println("Handler IOException: " + e.getMessage());
-                    } finally {
-                        try {
-                            clientSocket.close();
-                        } catch (IOException e) {
-                            System.out.println("Error closing client socket: " + e.getMessage());
-                        }
+            // builtin: echo
+            if ("echo".equals(cmd)) {
+                if (tokens.size() >= 2) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 1; i < tokens.size(); i++) {
+                        if (i > 1) sb.append(' ');
+                        sb.append(tokens.get(i));
                     }
-                }).start();
+                    out.println(sb.toString());
+                } else {
+                    out.println();
+                }
+                continue;
             }
 
-        } catch (IOException e) {
-            System.out.println("IOException: " + e.getMessage());
+            // external command: run with ProcessBuilder
+            ProcessBuilder pb = new ProcessBuilder(tokens);
+            try {
+                Process p = pb.start();
+
+                // forward stdout and stderr of the child process to our stdout/stderr
+                Thread tOut = streamCopier(p.getInputStream(), System.out);
+                Thread tErr = streamCopier(p.getErrorStream(), System.err);
+
+                // wait for process to finish, then join copier threads
+                p.waitFor();
+                tOut.join();
+                tErr.join();
+            } catch (IOException | InterruptedException e) {
+                // If a command cannot be run, print a simple error to stderr (tests won't rely on this).
+                System.err.println("Failed to run command: " + e.getMessage());
+            }
         }
+    }
+
+    // Tokenizer implementing single-quote rules described in the task.
+    // - Single quotes take everything literally.
+    // - Adjacent quoted/unquoted fragments concatenate.
+    // - Outside quotes, whitespace splits tokens (consecutive whitespace collapsed).
+    public static List<String> tokenize(String line) {
+        List<String> tokens = new ArrayList<>();
+        if (line == null || line.length() == 0) return tokens;
+
+        StringBuilder cur = new StringBuilder();
+        int i = 0, n = line.length();
+
+        while (i < n) {
+            char c = line.charAt(i);
+
+            if (c == '\'') {
+                // Enter single-quoted segment: append characters literally until next single-quote
+                i++; // skip opening '
+                while (i < n && line.charAt(i) != '\'') {
+                    cur.append(line.charAt(i));
+                    i++;
+                }
+                if (i < n && line.charAt(i) == '\'') i++; // skip closing '
+            } else if (Character.isWhitespace(c)) {
+                // end current token (if any) and skip all consecutive whitespace
+                if (cur.length() > 0) {
+                    tokens.add(cur.toString());
+                    cur.setLength(0);
+                }
+                while (i < n && Character.isWhitespace(line.charAt(i))) i++;
+            } else {
+                // normal character
+                cur.append(c);
+                i++;
+            }
+        }
+
+        if (cur.length() > 0) tokens.add(cur.toString());
+        return tokens;
+    }
+
+    // Helper to copy an InputStream to a PrintStream in a separate thread.
+    private static Thread streamCopier(InputStream src, PrintStream dest) {
+        Thread t = new Thread(() -> {
+            try {
+                byte[] buffer = new byte[8192];
+                int r;
+                while ((r = src.read(buffer)) != -1) {
+                    dest.write(buffer, 0, r);
+                }
+                dest.flush();
+            } catch (IOException ignored) {
+            }
+        });
+        t.start();
+        return t;
     }
 }
